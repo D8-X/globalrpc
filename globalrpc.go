@@ -186,6 +186,9 @@ func RpcQuery[T any](
 			// done
 			return v, err
 		}
+		if IsNonRetryable(err) {
+			return v, err
+		}
 		if i+1 < attempts {
 			// simple backoff with context-aware sleep
 			t := time.NewTimer(wait)

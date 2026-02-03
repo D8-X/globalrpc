@@ -2,6 +2,7 @@ package globalrpc
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -30,6 +31,33 @@ func (t RPCKind) String() string {
 	default:
 		return "Unknown"
 	}
+}
+
+// NonRetryableError wraps an error to signal that RpcQuery should not retry.
+// Use NewNonRetryableError to wrap errors that indicate a previous attempt
+// already had a side effect (e.g. a transaction was submitted).
+type NonRetryableError struct {
+	Err error
+}
+
+func (e *NonRetryableError) Error() string {
+	return e.Err.Error()
+}
+
+func (e *NonRetryableError) Unwrap() error {
+	return e.Err
+}
+
+// NewNonRetryableError wraps err so that RpcQuery will not retry.
+func NewNonRetryableError(err error) error {
+	return &NonRetryableError{Err: err}
+}
+
+// IsNonRetryable reports whether err (or any error in its chain) is a
+// NonRetryableError.
+func IsNonRetryable(err error) bool {
+	var nre *NonRetryableError
+	return errors.As(err, &nre)
 }
 
 func loadRPCConfig(chainId int, filename string) (RpcConfig, error) {
