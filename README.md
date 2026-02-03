@@ -5,7 +5,7 @@ EVM RPC and WSS manager
 - define a configuration file as provided in the example below
 - REDIS needs to be present and accessed via "redisAddr" and "redisPW" (password can be an empty string)
 - create an instance `glblRpc, err = globalrpc.NewGlobalRpc(int(chainConfig.ChainId), rpcConf, redisAddr, redisPw)`
-- most convieniently is to call RpcQuery, for example
+- most convienient version is to call RpcQuery, for example
 ```
     liquidatableInPool, err := globalrpc.RpcQuery(context.Background(), lq.glblRpc, 4, 10*time.Second,
         func(ctx context.Context, rpc *ethclient.Client) ([]string, error) {
