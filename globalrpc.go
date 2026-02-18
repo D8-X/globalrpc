@@ -2,9 +2,12 @@ package globalrpc
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -27,10 +30,15 @@ type GlobalRpc struct {
 type Receipt struct {
 	Url     string
 	RpcType RPCKind
+	lockID  string
 }
 
-// NewGlobalRpc initializes a new RPC handler for the given config-filename and
-// redis credentials
+func randomLockID() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
 func NewGlobalRpc(chainId int, configname, redisAddr, redisPw string) (*GlobalRpc, error) {
 	var gr GlobalRpc
 	var err error
@@ -38,13 +46,11 @@ func NewGlobalRpc(chainId int, configname, redisAddr, redisPw string) (*GlobalRp
 	if err != nil {
 		return nil, err
 	}
-	// ruedis client
 	client, err := rueidis.NewClient(
 		rueidis.ClientOption{InitAddress: []string{redisAddr}, Password: redisPw})
 	if err != nil {
 		return nil, err
 	}
-	// store URLs to Redis
 	gr.ruedi = &client
 	err = urlToRedis(gr.Config.ChainId, TypeHTTPS, gr.Config.Https, &client)
 	if err != nil {
@@ -57,18 +63,14 @@ func NewGlobalRpc(chainId int, configname, redisAddr, redisPw string) (*GlobalRp
 	return &gr, nil
 }
 
-// urlToRedis sets the urls for the given type and chain unless set recently
 func urlToRedis(chain int, urlType RPCKind, urls []string, client *rueidis.Client) error {
 	c := *client
-	// check whether anyone has set the urls recently
 	key := REDIS_SET_URL_LOCK + strconv.Itoa(chain) + urlType.String()
-	// delete first
 	cmd := c.B().Del().Key(key).Build()
 	err := c.Do(context.Background(), cmd).Error()
 	if err != nil {
 		slog.Info("unable to delete existing urls", "chain", chain, "type", urlType.String())
 	}
-	// now add
 	cmd = c.B().Set().Key(key).Value("locked").Nx().
 		Ex(time.Minute * 10).Build()
 	err = c.Do(context.Background(), cmd).Error()
@@ -76,16 +78,13 @@ func urlToRedis(chain int, urlType RPCKind, urls []string, client *rueidis.Clien
 		slog.Info("urls already set", "chain", chain, "type", urlType.String())
 		return nil
 	}
-	// push urls
 	if len(urls) == 0 {
 		slog.Info("no urls provided for", "rpc type", urlType.String())
 		return nil
 	}
 	key = REDIS_KEY_URLS + strconv.Itoa(chain) + "_" + urlType.String()
-	// Delete existing URLs first to prevent duplication
 	cmd = c.B().Del().Key(key).Build()
 	c.Do(context.Background(), cmd)
-	// push new url
 	cmd = c.B().Rpush().Key(key).Element(urls...).Build()
 	if err := c.Do(context.Background(), cmd).Error(); err != nil {
 		return err
@@ -93,49 +92,69 @@ func urlToRedis(chain int, urlType RPCKind, urls []string, client *rueidis.Clien
 	return nil
 }
 
-// GetAndLockRpc returns a receipt
-func (gr *GlobalRpc) GetAndLockRpc(rpcType RPCKind, maxWaitSec int) (Receipt, error) {
+func (gr *GlobalRpc) GetAndLockRpc(ctx context.Context, rpcType RPCKind, maxWaitSec int) (Receipt, error) {
 	c := *gr.ruedi
 	chainType := strconv.Itoa(gr.Config.ChainId) + "_" + rpcType.String()
+	lockID := randomLockID()
 	waitMs := 0
 
-	var url string
 	for {
-		var err error
-		cmd := c.B().Eval().Script(LUA_SCRIPT).Numkeys(3).Key(
+		cmd := c.B().Eval().Script(LUA_ACQUIRE).Numkeys(3).Key(
 			REDIS_KEY_CURR_IDX+chainType,
 			REDIS_KEY_URLS+chainType,
-			REDIS_KEY_LOCK+chainType).Arg(EXPIRY_SEC).Build()
-		url, err = c.Do(context.Background(), cmd).ToString()
-		if err != nil || url == "" {
-			slog.Info("no available url", "chain_type", chainType)
-			time.Sleep(250 * time.Millisecond)
-			waitMs += 250
-			if waitMs > maxWaitSec*1000 {
-				return Receipt{}, fmt.Errorf("unable to get rpc")
-			}
-			continue
+			REDIS_KEY_LOCK+chainType).Arg(EXPIRY_SEC, lockID).Build()
+		url, err := c.Do(ctx, cmd).ToString()
+		if err == nil && url != "" {
+			return Receipt{Url: url, RpcType: rpcType, lockID: lockID}, nil
 		}
-		break
+		select {
+		case <-ctx.Done():
+			return Receipt{}, ctx.Err()
+		default:
+		}
+		time.Sleep(250 * time.Millisecond)
+		waitMs += 250
+		if waitMs > maxWaitSec*1000 {
+			return Receipt{}, fmt.Errorf("unable to get rpc")
+		}
 	}
-	return Receipt{Url: url, RpcType: rpcType}, nil
 }
 
-// ReturnLock is for the user to return the receipt, so other
-// instances can get the url. If the receipt is not returned,
-// the lock expires after 60 seconds
 func (gr *GlobalRpc) ReturnLock(rec Receipt) {
+	if rec.lockID == "" {
+		return
+	}
 	chainType := strconv.Itoa(gr.Config.ChainId) + "_" + rec.RpcType.String()
 	key := REDIS_KEY_LOCK + chainType + rec.Url
 	c := *gr.ruedi
-	cmd := c.B().Del().Key(key).Build()
+	cmd := c.B().Eval().Script(LUA_RELEASE).Numkeys(1).Key(key).Arg(rec.lockID).Build()
 	err := c.Do(context.Background(), cmd).Error()
 	if err != nil {
-		fmt.Println("error", err.Error())
+		slog.Error("ReturnLock", "error", err)
 	}
 }
 
-// One attempt, with proper locking/closing and per-attempt timeout.
+func (gr *GlobalRpc) renewLock(rec Receipt) {
+	chainType := strconv.Itoa(gr.Config.ChainId) + "_" + rec.RpcType.String()
+	key := REDIS_KEY_LOCK + chainType + rec.Url
+	c := *gr.ruedi
+	cmd := c.B().Eval().Script(LUA_RENEW).Numkeys(1).Key(key).Arg(rec.lockID, EXPIRY_SEC).Build()
+	c.Do(context.Background(), cmd)
+}
+
+func (gr *GlobalRpc) renewLoop(rec Receipt, stop chan struct{}) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			gr.renewLock(rec)
+		}
+	}
+}
+
 func rpcAttempt[T any](
 	ctx context.Context,
 	rpcH *GlobalRpc,
@@ -144,7 +163,7 @@ func rpcAttempt[T any](
 ) (T, error) {
 	var zero T
 
-	rec, err := rpcH.GetAndLockRpc(TypeHTTPS, int(wait.Seconds()))
+	rec, err := rpcH.GetAndLockRpc(ctx, TypeHTTPS, int(wait.Seconds()))
 	if err != nil {
 		return zero, err
 	}
@@ -167,8 +186,32 @@ func rpcAttempt[T any](
 	return v, nil
 }
 
-// RpcQuery tries to execute a function that requires an rpc
-// and retries
+func RpcDial(ctx context.Context, rpcH *GlobalRpc, rpcType RPCKind) (*ethclient.Client, func(), error) {
+	rec, err := rpcH.GetAndLockRpc(ctx, rpcType, 10)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	rpc, err := ethclient.DialContext(ctx, rec.Url)
+	if err != nil {
+		rpcH.ReturnLock(rec)
+		return nil, nil, err
+	}
+
+	stop := make(chan struct{})
+	go rpcH.renewLoop(rec, stop)
+
+	var once sync.Once
+	cleanup := func() {
+		once.Do(func() {
+			close(stop)
+			rpc.Close()
+			rpcH.ReturnLock(rec)
+		})
+	}
+	return rpc, cleanup, nil
+}
+
 func RpcQuery[T any](
 	ctx context.Context,
 	rpcH *GlobalRpc,
@@ -183,14 +226,12 @@ func RpcQuery[T any](
 	}
 	for i := 0; i < attempts; i++ {
 		if v, err = rpcAttempt(ctx, rpcH, wait, call); err == nil {
-			// done
 			return v, err
 		}
 		if IsNonRetryable(err) {
 			return v, err
 		}
 		if i+1 < attempts {
-			// simple backoff with context-aware sleep
 			t := time.NewTimer(wait)
 			select {
 			case <-ctx.Done():

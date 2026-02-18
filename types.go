@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 )
 
@@ -71,7 +70,7 @@ func loadRPCConfig(chainId int, filename string) (RpcConfig, error) {
 	// Read the file's contents into a byte slice
 	byteValue, err := io.ReadAll(jsonFile)
 	if err != nil {
-		log.Fatalf("Failed to read file: %v", err)
+		return RpcConfig{}, fmt.Errorf("failed to read file: %v", err)
 	}
 	// Unmarshal the JSON data
 	err = json.Unmarshal(byteValue, &config)
