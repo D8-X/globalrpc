@@ -21,7 +21,57 @@ result, err := globalrpc.RpcQuery(ctx, grpc, 4, 10*time.Second,
 )
 ```
 
-## RpcDial (for write operations)
+## RpcExec (for write operations)
+Like `RpcQuery`, retries across different RPC nodes — but gives the caller full control.
+Each attempt receives:
+- `rpc` — the client for this attempt (may be a different node on retry)
+- `attempt` — zero-based attempt index
+- `prevErr` — the error from the previous attempt (`nil` on the first call)
+
+The caller can inspect `prevErr` to decide whether to abort, adjust parameters, or just
+let the retry proceed on the next node. Return a `NonRetryableError` to abort immediately.
+
+```go
+baseFeeScale := 1.0
+
+_, err := globalrpc.RpcExec(ctx, grpc, 3, 2*time.Second,
+    func(ctx context.Context, rpc *ethclient.Client, attempt int, prevErr error) (int, error) {
+        if prevErr != nil { //on first attempt it is nil
+            // no point retrying here
+            if strings.Contains(prevErr.Error(), "insufficient funds") {
+                slog.Info("wallet needs refill", "wallet", walletAddr.Hex())
+                return 0, globalrpc.NewNonRetryableError(prevErr)
+            }
+            // same here
+            if strings.Contains(prevErr.Error(), "gas required exceeds allowance") {
+                return 0, globalrpc.NewNonRetryableError(prevErr)
+            }
+            // here we can adjust before retrying
+            if strings.Contains(prevErr.Error(), "intrinsic gas too low") {
+                baseFeeScale = baseFeeScale * 2
+            }
+            slog.Warn("exec failed, retrying", "attempt", attempt, "prevErr", prevErr)
+        }
+
+        opts := d8x_futures.OptsOverridesExec{
+            OptsOverrides: d8x_futures.OptsOverrides{
+                WalletIdx: walletIdx,
+                Rpc:       rpc,
+            },
+            TsMin:      tsMin,
+            PayoutAddr: treasury.Address,
+        }
+        return 0, execOrder(orderIds, sym, &opts, baseFeeScale)
+    },
+)
+if err == nil {
+    slog.Info("order executed ✓")
+} else {
+    slog.Error("execution failed", "error", err)
+}
+```
+
+## RpcDial 
 Pins all calls to the same RPC node. Lock is automatically renewed until cleanup is called.
 ```go
 client, cleanup, err := globalrpc.RpcDial(ctx, grpc, globalrpc.TypeHTTPS)
