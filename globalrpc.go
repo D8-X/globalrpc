@@ -25,6 +25,7 @@ const (
 type GlobalRpc struct {
 	ruedi  *rueidis.Client
 	Config RpcConfig
+	pool   *connPool
 }
 
 type Receipt struct {
@@ -52,6 +53,7 @@ func NewGlobalRpc(chainId int, configname, redisAddr, redisPw string) (*GlobalRp
 		return nil, err
 	}
 	gr.ruedi = &client
+	gr.pool = newConnPool()
 	err = urlToRedis(gr.Config.ChainId, TypeHTTPS, gr.Config.Https, &client)
 	if err != nil {
 		return nil, err
@@ -172,14 +174,16 @@ func rpcAttempt[T any](
 	actx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 
-	rpc, err := ethclient.DialContext(actx, rec.Url)
+	rpc, err := rpcH.pool.getClient(actx, rec.Url)
 	if err != nil {
 		return zero, err
 	}
-	defer rpc.Close()
 
 	v, err := call(actx, rpc)
 	if err != nil {
+		if isConnectionError(err) {
+			rpcH.pool.removeClient(rec.Url)
+		}
 		slog.Error("rpcAttempt", "error", err)
 		return zero, err
 	}
@@ -192,7 +196,13 @@ func RpcDial(ctx context.Context, rpcH *GlobalRpc, rpcType RPCKind) (*ethclient.
 		return nil, nil, err
 	}
 
-	rpc, err := ethclient.DialContext(ctx, rec.Url)
+	var rpc *ethclient.Client
+	pooled := isHTTPS(rec.Url)
+	if pooled {
+		rpc, err = rpcH.pool.getClient(ctx, rec.Url)
+	} else {
+		rpc, err = ethclient.DialContext(ctx, rec.Url)
+	}
 	if err != nil {
 		rpcH.ReturnLock(rec)
 		return nil, nil, err
@@ -205,7 +215,9 @@ func RpcDial(ctx context.Context, rpcH *GlobalRpc, rpcType RPCKind) (*ethclient.
 	cleanup := func() {
 		once.Do(func() {
 			close(stop)
-			rpc.Close()
+			if !pooled {
+				rpc.Close()
+			}
 			rpcH.ReturnLock(rec)
 		})
 	}
