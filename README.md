@@ -21,7 +21,61 @@ result, err := globalrpc.RpcQuery(ctx, grpc, 4, 10*time.Second,
 )
 ```
 
-## RpcDial (for write operations)
+## RpcExec (for write operations)
+
+```go
+refetchNonce := false // we need to set a tracker
+
+_, err := globalrpc.RpcExec(ctx, grpc, 3, 2*time.Second,
+    func(ctx context.Context, rpc *ethclient.Client) (int, error) {
+
+        // we reseed nonce from chain if the onError has flagged it
+        if refetchNonce {
+            if err := tracker.Seed(ctx, rpc); err != nil {
+                return 0, globalrpc.NewNonRetryableError(err)
+            }
+            refetchNonce = false
+        }
+        opts := d8x_futures.OptsOverridesExec{
+            OptsOverrides: d8x_futures.OptsOverrides{
+                WalletIdx: walletIdx,
+                Rpc:       rpc,
+            },
+            TsMin:      tsMin,
+            PayoutAddr: treasury.Address,
+        }
+        return 0, execOrder(orderIds, sym, &opts, baseFeeScale)
+    },
+    func(err error, attempt int) error {
+        // no point retrying here
+        if strings.Contains(err.Error(), "insufficient funds") {
+            slog.Info("wallet needs refill", "wallet", walletAddr.Hex())
+            return globalrpc.NewNonRetryableError(err)
+        }
+        // same here
+        if strings.Contains(err.Error(), "gas required exceeds allowance") {
+            return globalrpc.NewNonRetryableError(err)
+        }
+        // here we can adjust before retrying
+        if strings.Contains(err.Error(), "intrinsic gas too low") {
+            baseFeeScale = baseFeeScale * 2
+        }
+        // --> we set a flag here to ask refercting nonce on next attemp
+        if strings.Contains(err.Error(), "nonce too low") {
+            refetchNonce = true
+        }
+        slog.Warn("exec failed, retrying", "attempt", attempt, "error", err)
+        return err
+    },
+)
+if err == nil {
+    slog.Info("order executed")
+} else {
+    slog.Error("execution failed", "error", err)
+}
+```
+
+## RpcDial
 Pins all calls to the same RPC node. Lock is automatically renewed until cleanup is called.
 ```go
 client, cleanup, err := globalrpc.RpcDial(ctx, grpc, globalrpc.TypeHTTPS)

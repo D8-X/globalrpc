@@ -255,3 +255,38 @@ func RpcQuery[T any](
 	}
 	return v, fmt.Errorf("rpc query failed after %d attempts: %v", attempts, err)
 }
+
+
+func RpcExec[T any](
+	ctx context.Context,
+	rpcH *GlobalRpc,
+	attempts int,
+	wait time.Duration,
+	call func(ctx context.Context, rpc *ethclient.Client) (T, error),
+	onError func(err error, attempt int) error,
+) (T, error) {
+	var v T
+	var err error
+	if attempts < 1 {
+		return v, fmt.Errorf("attempts must be >= 1")
+	}
+	for i := range attempts {
+		if v, err = rpcAttempt(ctx, rpcH, wait, call); err == nil {
+			return v, nil
+		}
+		err = onError(err, i)
+		if IsNonRetryable(err) {
+			return v, err
+		}
+		if i+1 < attempts {
+			t := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				t.Stop()
+				return v, ctx.Err()
+			case <-t.C:
+			}
+		}
+	}
+	return v, fmt.Errorf("rpc exec failed after %d attempts: %v", attempts, err)
+}
