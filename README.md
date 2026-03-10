@@ -22,18 +22,7 @@ result, err := globalrpc.RpcQuery(ctx, grpc, 4, 10*time.Second,
 ```
 
 ## RpcExec (for write operations)
-Like `RpcQuery`, retries across different RPC nodes — but gives the caller full control.
-Each attempt receives:
-- `rpc` — the client for this attempt (may be a different node on retry)
-- `attempt` — zero-based attempt index
-- `prevErr` — the error from the previous attempt (`nil` on the first call)
-
-The caller can inspect `prevErr` to decide whether to abort, adjust parameters, or just
-let the retry proceed on the next node. Return a `NonRetryableError` to abort immediately.
-
 ```go
-baseFeeScale := 1.0
-
 _, err := globalrpc.RpcExec(ctx, grpc, 3, 2*time.Second,
     func(ctx context.Context, rpc *ethclient.Client, attempt int, prevErr error) (int, error) {
         if prevErr != nil { //on first attempt it is nil
