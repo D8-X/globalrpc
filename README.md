@@ -60,7 +60,7 @@ _, err := globalrpc.RpcExec(ctx, grpc, 3, 2*time.Second,
     },
 )
 if err == nil {
-    slog.Info("order executed ✓")
+    slog.Info("order executed")
 } else {
     slog.Error("execution failed", "error", err)
 }
