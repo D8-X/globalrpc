@@ -22,26 +22,20 @@ result, err := globalrpc.RpcQuery(ctx, grpc, 4, 10*time.Second,
 ```
 
 ## RpcExec (for write operations)
-```go
-_, err := globalrpc.RpcExec(ctx, grpc, 3, 2*time.Second,
-    func(ctx context.Context, rpc *ethclient.Client, attempt int, prevErr error) (int, error) {
-        if prevErr != nil { //on first attempt it is nil
-            // no point retrying here
-            if strings.Contains(prevErr.Error(), "insufficient funds") {
-                slog.Info("wallet needs refill", "wallet", walletAddr.Hex())
-                return 0, globalrpc.NewNonRetryableError(prevErr)
-            }
-            // same here
-            if strings.Contains(prevErr.Error(), "gas required exceeds allowance") {
-                return 0, globalrpc.NewNonRetryableError(prevErr)
-            }
-            // here we can adjust before retrying
-            if strings.Contains(prevErr.Error(), "intrinsic gas too low") {
-                baseFeeScale = baseFeeScale * 2
-            }
-            slog.Warn("exec failed, retrying", "attempt", attempt, "prevErr", prevErr)
-        }
 
+```go
+refetchNonce := false // we need to set a tracker
+
+_, err := globalrpc.RpcExec(ctx, grpc, 3, 2*time.Second,
+    func(ctx context.Context, rpc *ethclient.Client) (int, error) {
+
+        // we reseed nonce from chain if the onError has flagged it
+        if refetchNonce {
+            if err := tracker.Seed(ctx, rpc); err != nil {
+                return 0, globalrpc.NewNonRetryableError(err)
+            }
+            refetchNonce = false
+        }
         opts := d8x_futures.OptsOverridesExec{
             OptsOverrides: d8x_futures.OptsOverrides{
                 WalletIdx: walletIdx,
@@ -52,6 +46,27 @@ _, err := globalrpc.RpcExec(ctx, grpc, 3, 2*time.Second,
         }
         return 0, execOrder(orderIds, sym, &opts, baseFeeScale)
     },
+    func(err error, attempt int) error {
+        // no point retrying here
+        if strings.Contains(err.Error(), "insufficient funds") {
+            slog.Info("wallet needs refill", "wallet", walletAddr.Hex())
+            return globalrpc.NewNonRetryableError(err)
+        }
+        // same here
+        if strings.Contains(err.Error(), "gas required exceeds allowance") {
+            return globalrpc.NewNonRetryableError(err)
+        }
+        // here we can adjust before retrying
+        if strings.Contains(err.Error(), "intrinsic gas too low") {
+            baseFeeScale = baseFeeScale * 2
+        }
+        // --> we set a flag here to ask refercting nonce on next attemp
+        if strings.Contains(err.Error(), "nonce too low") {
+            refetchNonce = true
+        }
+        slog.Warn("exec failed, retrying", "attempt", attempt, "error", err)
+        return err
+    },
 )
 if err == nil {
     slog.Info("order executed ✓")
@@ -60,7 +75,7 @@ if err == nil {
 }
 ```
 
-## RpcDial 
+## RpcDial
 Pins all calls to the same RPC node. Lock is automatically renewed until cleanup is called.
 ```go
 client, cleanup, err := globalrpc.RpcDial(ctx, grpc, globalrpc.TypeHTTPS)
