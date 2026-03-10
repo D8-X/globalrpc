@@ -39,6 +39,12 @@ _, err := globalrpc.RpcExec(ctx, grpc, 3, 2*time.Second,
             if strings.Contains(prevErr.Error(), "intrinsic gas too low") {
                 baseFeeScale = baseFeeScale * 2
             }
+            // reseed nonce from chain before retrying
+            if strings.Contains(prevErr.Error(), "nonce too low") {
+                if err := tracker.Seed(ctx, rpc); err != nil {
+                    return 0, globalrpc.NewNonRetryableError(err)
+                }
+            }
             slog.Warn("exec failed, retrying", "attempt", attempt, "prevErr", prevErr)
         }
 
