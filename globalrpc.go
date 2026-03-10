@@ -181,6 +181,9 @@ func rpcAttempt[T any](
 
 	v, err := call(actx, rpc)
 	if err != nil {
+		if isConnectionError(err) {
+			rpcH.pool.removeClient(rec.Url)
+		}
 		slog.Error("rpcAttempt", "error", err)
 		return zero, err
 	}

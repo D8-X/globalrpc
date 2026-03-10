@@ -2,6 +2,9 @@ package globalrpc
 
 import (
 	"context"
+	"errors"
+	"io"
+	"net"
 	"strings"
 	"sync"
 
@@ -42,6 +45,35 @@ func (p *connPool) getClient(ctx context.Context, url string) (*ethclient.Client
 	p.clients[url] = c
 	p.mu.Unlock()
 	return c, nil
+}
+
+func (p *connPool) removeClient(url string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if c, ok := p.clients[url]; ok {
+		c.Close()
+		delete(p.clients, url)
+	}
+}
+
+func isConnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return false
+	}
+	var netErr *net.OpError
+	if errors.As(err, &netErr) {
+		return true
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "connection refused")
 }
 
 func isHTTPS(url string) bool {
