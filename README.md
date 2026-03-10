@@ -1,5 +1,5 @@
 # globalrpc
-EVM RPC and WSS manager with nonce tracking.
+EVM RPC and WSS manager with nonce tracking. HTTPS connections are pooled and reused across calls.
 
 # Usage
 
