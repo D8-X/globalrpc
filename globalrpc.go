@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -167,7 +168,7 @@ func rpcAttempt[T any](
 
 	rec, err := rpcH.GetAndLockRpc(ctx, TypeHTTPS, int(wait.Seconds()))
 	if err != nil {
-		return zero, err
+		return zero, &RpcError{Kind: RpcErrLock, Err: err}
 	}
 	defer rpcH.ReturnLock(rec)
 
@@ -176,13 +177,14 @@ func rpcAttempt[T any](
 
 	rpc, err := rpcH.pool.getClient(actx, rec.Url)
 	if err != nil {
-		return zero, err
+		return zero, &RpcError{Kind: RpcErrDial, Err: err}
 	}
 
 	v, err := call(actx, rpc)
 	if err != nil {
 		if isConnectionError(err) {
 			rpcH.pool.removeClient(rec.Url)
+			return zero, &RpcError{Kind: RpcErrConnection, Err: err}
 		}
 		slog.Error("rpcAttempt", "error", err)
 		return zero, err
@@ -256,6 +258,9 @@ func RpcQuery[T any](
 	return v, fmt.Errorf("rpc query failed after %d attempts: %v", attempts, err)
 }
 
+// RpcExec retries a write operation across RPC nodes. The callback's prevErr
+// is either a *TxError (classified tx rejection), a *RpcError (infrastructure),
+// or a plain error (unclassified). On the first attempt prevErr is nil.
 func RpcExec[T any](
 	ctx context.Context,
 	rpcH *GlobalRpc,
@@ -279,7 +284,14 @@ func RpcExec[T any](
 		if IsNonRetryable(err) {
 			return v, err
 		}
-		prevErr = err
+		var rpcErr *RpcError
+		if errors.As(err, &rpcErr) {
+			prevErr = err
+		} else if kind := ClassifyTxErr(err); kind != TxErrUnknown {
+			prevErr = &TxError{Kind: kind, Err: err}
+		} else {
+			prevErr = err
+		}
 		if i+1 < attempts {
 			t := time.NewTimer(wait)
 			select {

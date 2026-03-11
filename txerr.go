@@ -190,6 +190,40 @@ func (e *TxError) Unwrap() error {
 	return e.Err
 }
 
+type RpcErrKind int
+
+const (
+	RpcErrUnknown    RpcErrKind = iota
+	RpcErrLock                  // couldn't acquire RPC lock
+	RpcErrDial                  // couldn't connect to RPC node
+	RpcErrConnection            // connection dropped during call
+)
+
+func (k RpcErrKind) String() string {
+	switch k {
+	case RpcErrLock:
+		return "Lock"
+	case RpcErrDial:
+		return "Dial"
+	case RpcErrConnection:
+		return "Connection"
+	default:
+		return "Unknown"
+	}
+}
+type RpcError struct {
+	Kind RpcErrKind
+	Err  error
+}
+
+func (e *RpcError) Error() string {
+	return e.Err.Error()
+}
+
+func (e *RpcError) Unwrap() error {
+	return e.Err
+}
+
 func ClassifyTxErr(err error) TxErrKind {
 	if err == nil {
 		return TxErrUnknown
