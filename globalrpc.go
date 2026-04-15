@@ -192,10 +192,10 @@ func rpcAttempt[T any](
 	return v, nil
 }
 
-func RpcDial(ctx context.Context, rpcH *GlobalRpc, rpcType RPCKind) (*ethclient.Client, func(), error) {
+func RpcDial(ctx context.Context, rpcH *GlobalRpc, rpcType RPCKind) (*ethclient.Client, func(), string, error) {
 	rec, err := rpcH.GetAndLockRpc(ctx, rpcType, 10)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 
 	var rpc *ethclient.Client
@@ -207,7 +207,7 @@ func RpcDial(ctx context.Context, rpcH *GlobalRpc, rpcType RPCKind) (*ethclient.
 	}
 	if err != nil {
 		rpcH.ReturnLock(rec)
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 
 	stop := make(chan struct{})
@@ -223,7 +223,7 @@ func RpcDial(ctx context.Context, rpcH *GlobalRpc, rpcType RPCKind) (*ethclient.
 			rpcH.ReturnLock(rec)
 		})
 	}
-	return rpc, cleanup, nil
+	return rpc, cleanup, rec.Url, nil
 }
 
 func RpcQuery[T any](
@@ -238,7 +238,7 @@ func RpcQuery[T any](
 	if attempts < 1 {
 		return v, fmt.Errorf("attempts must be >= 1")
 	}
-	for i := 0; i < attempts; i++ {
+	for i := range attempts {
 		if v, err = rpcAttempt(ctx, rpcH, wait, call); err == nil {
 			return v, err
 		}
