@@ -6,9 +6,9 @@ on:
     types: [closed]
   push:
     branches: [main]  
-    # paths-ignore:
-    #   - 'README.md'
-    #   - '.github/**'
+    paths-ignore:
+      - 'README.md'
+      - '.github/**'
 
 jobs:
   tag:
@@ -27,13 +27,13 @@ jobs:
           TAG=$(git tag --sort=-v:refname | head -1)
           echo "tag=${TAG:-v0.0.0}" >> $GITHUB_OUTPUT
 
-      - name: Bump minor version
+      - name: Bump patch version
         id: bump
         run: |
           TAG="${{ steps.latest.outputs.tag }}"
           TAG="${TAG#v}"
           IFS='.' read -r MAJOR MINOR PATCH <<< "$TAG"
-          NEW="v${MAJOR}.$((MINOR + 1)).0"
+          NEW="v${MAJOR}.$((MINOR)).$((PATCH + 1))"
           echo "new_tag=$NEW" >> $GITHUB_OUTPUT
 
       - name: Create tag
