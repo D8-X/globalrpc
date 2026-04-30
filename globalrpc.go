@@ -27,17 +27,6 @@ type GlobalRpc struct {
 	ruedi  *rueidis.Client
 	Config RpcConfig
 	pool   *connPool
-	log    *slog.Logger
-}
-
-type Option func(*GlobalRpc)
-
-func WithLogger(l *slog.Logger) Option {
-	return func(gr *GlobalRpc) {
-		if l != nil {
-			gr.log = l
-		}
-	}
 }
 
 type Receipt struct {
@@ -52,12 +41,8 @@ func randomLockID() string {
 	return hex.EncodeToString(b)
 }
 
-func NewGlobalRpc(chainId int, configname, redisAddr, redisPw string, opts ...Option) (*GlobalRpc, error) {
+func NewGlobalRpc(chainId int, configname, redisAddr, redisPw string) (*GlobalRpc, error) {
 	var gr GlobalRpc
-	gr.log = slog.Default()
-	for _, opt := range opts {
-		opt(&gr)
-	}
 	var err error
 	gr.Config, err = loadRPCConfig(chainId, configname)
 	if err != nil {
@@ -70,37 +55,34 @@ func NewGlobalRpc(chainId int, configname, redisAddr, redisPw string, opts ...Op
 	}
 	gr.ruedi = &client
 	gr.pool = newConnPool()
-	err = urlToRedis(gr.Config.ChainId, TypeHTTPS, gr.Config.Https, &client, gr.log)
+	err = urlToRedis(gr.Config.ChainId, TypeHTTPS, gr.Config.Https, &client)
 	if err != nil {
 		return nil, err
 	}
-	err = urlToRedis(gr.Config.ChainId, TypeWSS, gr.Config.Wss, &client, gr.log)
+	err = urlToRedis(gr.Config.ChainId, TypeWSS, gr.Config.Wss, &client)
 	if err != nil {
 		return nil, err
 	}
 	return &gr, nil
 }
 
-func urlToRedis(chain int, urlType RPCKind, urls []string, client *rueidis.Client, log *slog.Logger) error {
-	if log == nil {
-		log = slog.Default()
-	}
+func urlToRedis(chain int, urlType RPCKind, urls []string, client *rueidis.Client) error {
 	c := *client
 	key := REDIS_SET_URL_LOCK + strconv.Itoa(chain) + urlType.String()
 	cmd := c.B().Del().Key(key).Build()
 	err := c.Do(context.Background(), cmd).Error()
 	if err != nil {
-		log.Info("unable to delete existing urls", "chain", chain, "type", urlType.String())
+		slog.Info("unable to delete existing urls", "chain", chain, "type", urlType.String())
 	}
 	cmd = c.B().Set().Key(key).Value("locked").Nx().
 		Ex(time.Minute * 10).Build()
 	err = c.Do(context.Background(), cmd).Error()
 	if err != nil {
-		log.Info("urls already set", "chain", chain, "type", urlType.String())
+		slog.Info("urls already set", "chain", chain, "type", urlType.String())
 		return nil
 	}
 	if len(urls) == 0 {
-		log.Info("no urls provided for", "chain", chain, "rpc type", urlType.String())
+		slog.Info("no urls provided for", "rpc type", urlType.String())
 		return nil
 	}
 	key = REDIS_KEY_URLS + strconv.Itoa(chain) + "_" + urlType.String()
@@ -151,7 +133,7 @@ func (gr *GlobalRpc) ReturnLock(rec Receipt) {
 	cmd := c.B().Eval().Script(LUA_RELEASE).Numkeys(1).Key(key).Arg(rec.lockID).Build()
 	err := c.Do(context.Background(), cmd).Error()
 	if err != nil {
-		gr.log.Error("ReturnLock", "error", err)
+		slog.Error("ReturnLock", "error", err)
 	}
 }
 
@@ -204,7 +186,7 @@ func rpcAttempt[T any](
 			rpcH.pool.removeClient(rec.Url)
 			return zero, &RpcError{Kind: RpcErrConnection, Err: err}
 		}
-		rpcH.log.Error("rpcAttempt", "error", err)
+		slog.Error("rpcAttempt", "error", err)
 		return zero, err
 	}
 	return v, nil
