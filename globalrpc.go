@@ -82,9 +82,6 @@ func NewGlobalRpc(chainId int, configname, redisAddr, redisPw string, opts ...Op
 }
 
 func urlToRedis(chain int, urlType RPCKind, urls []string, client *rueidis.Client, log *slog.Logger) error {
-	if log == nil {
-		log = slog.Default()
-	}
 	c := *client
 	key := REDIS_SET_URL_LOCK + strconv.Itoa(chain) + urlType.String()
 	cmd := c.B().Del().Key(key).Build()
