@@ -2,15 +2,23 @@ package globalrpc
 
 const LUA_ACQUIRE = `
 	local urls = redis.call("LRANGE", KEYS[2], 0, -1)
+	local seeded = 0
 	if #urls == 0 then
-		return nil
+		if #ARGV < 3 then
+			return nil
+		end
+		for i = 3, #ARGV do
+			redis.call("RPUSH", KEYS[2], ARGV[i])
+		end
+		urls = redis.call("LRANGE", KEYS[2], 0, -1)
+		seeded = 1
 	end
 	local index = redis.call("INCR", KEYS[1]) - 1
 	local selectedUrl = urls[(index % #urls) + 1]
 	local lockKey = KEYS[3] .. selectedUrl
 	local lockAcquired = redis.call("SET", lockKey, ARGV[2], "NX", "EX", ARGV[1])
 	if lockAcquired then
-		return selectedUrl
+		return {selectedUrl, seeded}
 	else
 		return nil
 	end

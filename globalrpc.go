@@ -110,19 +110,31 @@ func urlToRedis(chain int, urlType RPCKind, urls []string, client *rueidis.Clien
 	return nil
 }
 
+func (gr *GlobalRpc) urlsFor(rpcType RPCKind) []string {
+	if rpcType == TypeWSS {
+		return gr.Config.Wss
+	}
+	return gr.Config.Https
+}
+
 func (gr *GlobalRpc) GetAndLockRpc(ctx context.Context, rpcType RPCKind, maxWaitSec int) (Receipt, error) {
 	c := *gr.ruedi
 	chainType := strconv.Itoa(gr.Config.ChainId) + "_" + rpcType.String()
 	lockID := randomLockID()
 	waitMs := 0
+	args := append([]string{EXPIRY_SEC, lockID}, gr.urlsFor(rpcType)...)
 
 	for {
 		cmd := c.B().Eval().Script(LUA_ACQUIRE).Numkeys(3).Key(
 			REDIS_KEY_CURR_IDX+chainType,
 			REDIS_KEY_URLS+chainType,
-			REDIS_KEY_LOCK+chainType).Arg(EXPIRY_SEC, lockID).Build()
-		url, err := c.Do(ctx, cmd).ToString()
+			REDIS_KEY_LOCK+chainType).Arg(args...).Build()
+		url, seeded, err := parseAcquire(c.Do(ctx, cmd))
 		if err == nil && url != "" {
+			if seeded {
+				gr.log.Warn("globalrpc url list was empty, reseeded from config",
+					"chain", gr.Config.ChainId, "type", rpcType.String(), "urls", len(gr.urlsFor(rpcType)))
+			}
 			return Receipt{Url: url, RpcType: rpcType, lockID: lockID}, nil
 		}
 		select {
@@ -136,6 +148,22 @@ func (gr *GlobalRpc) GetAndLockRpc(ctx context.Context, rpcType RPCKind, maxWait
 			return Receipt{}, fmt.Errorf("unable to get rpc")
 		}
 	}
+}
+
+func parseAcquire(res rueidis.RedisResult) (string, bool, error) {
+	arr, err := res.ToArray()
+	if err != nil || len(arr) != 2 {
+		return "", false, err
+	}
+	url, err := arr[0].ToString()
+	if err != nil {
+		return "", false, err
+	}
+	seeded, err := arr[1].AsInt64()
+	if err != nil {
+		return url, false, nil
+	}
+	return url, seeded == 1, nil
 }
 
 func (gr *GlobalRpc) ReturnLock(rec Receipt) {
