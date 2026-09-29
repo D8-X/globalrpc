@@ -3,6 +3,7 @@ package globalrpc
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -24,10 +25,11 @@ const (
 )
 
 type GlobalRpc struct {
-	ruedi  *rueidis.Client
-	Config RpcConfig
-	pool   *connPool
-	log    *slog.Logger
+	ruedi    *rueidis.Client
+	Config   RpcConfig
+	pool     *connPool
+	log      *slog.Logger
+	redisTLS *tls.Config
 }
 
 type Option func(*GlobalRpc)
@@ -38,6 +40,24 @@ func WithLogger(l *slog.Logger) Option {
 			gr.log = l
 		}
 	}
+}
+
+// WithRedisTLS connects to Redis over TLS using cfg (e.g. &tls.Config{} for
+// the system CA pool), as required by AWS ElastiCache with in-transit
+// encryption enabled.
+func WithRedisTLS(cfg *tls.Config) Option {
+	return func(gr *GlobalRpc) {
+		gr.redisTLS = cfg
+	}
+}
+
+// keyTag returns the per chain/rpc-type part of the redis keys, wrapped in
+// braces as a Redis Cluster hash tag: all keys of one chain/type (url list,
+// round-robin index and url locks) then hash to the same slot, which
+// LUA_ACQUIRE requires as it touches all of them (and builds the lock key
+// itself).
+func keyTag(chain int, rpcType RPCKind) string {
+	return "{" + strconv.Itoa(chain) + "_" + rpcType.String() + "}"
 }
 
 type Receipt struct {
@@ -64,7 +84,7 @@ func NewGlobalRpc(chainId int, configname, redisAddr, redisPw string, opts ...Op
 		return nil, err
 	}
 	client, err := rueidis.NewClient(
-		rueidis.ClientOption{InitAddress: []string{redisAddr}, Password: redisPw})
+		rueidis.ClientOption{InitAddress: []string{redisAddr}, Password: redisPw, TLSConfig: gr.redisTLS})
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +120,7 @@ func urlToRedis(chain int, urlType RPCKind, urls []string, client *rueidis.Clien
 		log.Info("no urls provided for", "chain", chain, "rpc type", urlType.String())
 		return nil
 	}
-	key = REDIS_KEY_URLS + strconv.Itoa(chain) + "_" + urlType.String()
+	key = REDIS_KEY_URLS + keyTag(chain, urlType)
 	cmd = c.B().Del().Key(key).Build()
 	c.Do(context.Background(), cmd)
 	cmd = c.B().Rpush().Key(key).Element(urls...).Build()
@@ -119,7 +139,7 @@ func (gr *GlobalRpc) urlsFor(rpcType RPCKind) []string {
 
 func (gr *GlobalRpc) GetAndLockRpc(ctx context.Context, rpcType RPCKind, maxWaitSec int) (Receipt, error) {
 	c := *gr.ruedi
-	chainType := strconv.Itoa(gr.Config.ChainId) + "_" + rpcType.String()
+	chainType := keyTag(gr.Config.ChainId, rpcType)
 	lockID := randomLockID()
 	waitMs := 0
 	args := append([]string{EXPIRY_SEC, lockID}, gr.urlsFor(rpcType)...)
@@ -170,7 +190,7 @@ func (gr *GlobalRpc) ReturnLock(rec Receipt) {
 	if rec.lockID == "" {
 		return
 	}
-	chainType := strconv.Itoa(gr.Config.ChainId) + "_" + rec.RpcType.String()
+	chainType := keyTag(gr.Config.ChainId, rec.RpcType)
 	key := REDIS_KEY_LOCK + chainType + rec.Url
 	c := *gr.ruedi
 	cmd := c.B().Eval().Script(LUA_RELEASE).Numkeys(1).Key(key).Arg(rec.lockID).Build()
@@ -181,7 +201,7 @@ func (gr *GlobalRpc) ReturnLock(rec Receipt) {
 }
 
 func (gr *GlobalRpc) renewLock(rec Receipt) {
-	chainType := strconv.Itoa(gr.Config.ChainId) + "_" + rec.RpcType.String()
+	chainType := keyTag(gr.Config.ChainId, rec.RpcType)
 	key := REDIS_KEY_LOCK + chainType + rec.Url
 	c := *gr.ruedi
 	cmd := c.B().Eval().Script(LUA_RENEW).Numkeys(1).Key(key).Arg(rec.lockID, EXPIRY_SEC).Build()
