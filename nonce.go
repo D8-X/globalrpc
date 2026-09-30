@@ -20,7 +20,7 @@ type NonceProvider interface {
 type nonceTracker struct {
 	address common.Address
 	chainID int
-	redis   *rueidis.Client
+	redis   rueidis.Client
 }
 
 func (t *nonceTracker) redisKey() string {
@@ -32,14 +32,14 @@ func (t *nonceTracker) Seed(ctx context.Context, client *ethclient.Client) error
 	if err != nil {
 		return err
 	}
-	c := *t.redis
+	c := t.redis
 	key := t.redisKey()
 	cmd := c.B().Set().Key(key).Value(strconv.FormatUint(n, 10)).Build()
 	return c.Do(ctx, cmd).Error()
 }
 
 func (t *nonceTracker) Next() (uint64, error) {
-	c := *t.redis
+	c := t.redis
 	key := t.redisKey()
 	cmd := c.B().Eval().Script(LUA_NONCE_NEXT).Numkeys(1).Key(key).Build()
 	val, err := c.Do(context.Background(), cmd).AsInt64()

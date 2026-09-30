@@ -25,7 +25,7 @@ const (
 )
 
 type GlobalRpc struct {
-	ruedi    *rueidis.Client
+	ruedi    rueidis.Client
 	Config   RpcConfig
 	pool     *connPool
 	log      *slog.Logger
@@ -88,21 +88,20 @@ func NewGlobalRpc(chainId int, configname, redisAddr, redisPw string, opts ...Op
 	if err != nil {
 		return nil, err
 	}
-	gr.ruedi = &client
+	gr.ruedi = client
 	gr.pool = newConnPool()
-	err = urlToRedis(gr.Config.ChainId, TypeHTTPS, gr.Config.Https, &client, gr.log)
+	err = urlToRedis(gr.Config.ChainId, TypeHTTPS, gr.Config.Https, client, gr.log)
 	if err != nil {
 		return nil, err
 	}
-	err = urlToRedis(gr.Config.ChainId, TypeWSS, gr.Config.Wss, &client, gr.log)
+	err = urlToRedis(gr.Config.ChainId, TypeWSS, gr.Config.Wss, client, gr.log)
 	if err != nil {
 		return nil, err
 	}
 	return &gr, nil
 }
 
-func urlToRedis(chain int, urlType RPCKind, urls []string, client *rueidis.Client, log *slog.Logger) error {
-	c := *client
+func urlToRedis(chain int, urlType RPCKind, urls []string, c rueidis.Client, log *slog.Logger) error {
 	key := REDIS_SET_URL_LOCK + strconv.Itoa(chain) + urlType.String()
 	cmd := c.B().Del().Key(key).Build()
 	err := c.Do(context.Background(), cmd).Error()
@@ -138,7 +137,7 @@ func (gr *GlobalRpc) urlsFor(rpcType RPCKind) []string {
 }
 
 func (gr *GlobalRpc) GetAndLockRpc(ctx context.Context, rpcType RPCKind, maxWaitSec int) (Receipt, error) {
-	c := *gr.ruedi
+	c := gr.ruedi
 	chainType := keyTag(gr.Config.ChainId, rpcType)
 	lockID := randomLockID()
 	waitMs := 0
@@ -192,7 +191,7 @@ func (gr *GlobalRpc) ReturnLock(rec Receipt) {
 	}
 	chainType := keyTag(gr.Config.ChainId, rec.RpcType)
 	key := REDIS_KEY_LOCK + chainType + rec.Url
-	c := *gr.ruedi
+	c := gr.ruedi
 	cmd := c.B().Eval().Script(LUA_RELEASE).Numkeys(1).Key(key).Arg(rec.lockID).Build()
 	err := c.Do(context.Background(), cmd).Error()
 	if err != nil {
@@ -203,7 +202,7 @@ func (gr *GlobalRpc) ReturnLock(rec Receipt) {
 func (gr *GlobalRpc) renewLock(rec Receipt) {
 	chainType := keyTag(gr.Config.ChainId, rec.RpcType)
 	key := REDIS_KEY_LOCK + chainType + rec.Url
-	c := *gr.ruedi
+	c := gr.ruedi
 	cmd := c.B().Eval().Script(LUA_RENEW).Numkeys(1).Key(key).Arg(rec.lockID, EXPIRY_SEC).Build()
 	c.Do(context.Background(), cmd)
 }

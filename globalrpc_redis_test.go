@@ -54,7 +54,7 @@ func TestRedis(t *testing.T) {
 	}
 
 	// an emptied url list is reseeded from config by LUA_ACQUIRE
-	c := *gr.ruedi
+	c := gr.ruedi
 	key := REDIS_KEY_URLS + keyTag(31337, TypeWSS)
 	if err := c.Do(ctx, c.B().Del().Key(key).Build()).Error(); err != nil {
 		t.Fatal(err)
