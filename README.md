@@ -10,6 +10,11 @@ EVM RPC and WSS manager with nonce tracking. HTTPS connections are pooled and re
 ```go
 grpc, err := globalrpc.NewGlobalRpc(chainId, "rpc_config.json", redisAddr, redisPw)
 ```
+- Redis Cluster (e.g. ElastiCache with cluster mode enabled, or serverless) is supported: all keys of one chain/rpc type share a hash tag and thus a slot.
+- For Redis with TLS (e.g. ElastiCache with in-transit encryption), pass `globalrpc.WithRedisTLS(&tls.Config{})` to use the system CA pool:
+```go
+grpc, err := globalrpc.NewGlobalRpc(chainId, "rpc_config.json", redisAddr, redisPw, globalrpc.WithRedisTLS(&tls.Config{}))
+```
 
 ## RpcQuery (for read operations)
 Retries across different RPC nodes. Return a `NonRetryableError` if retrying won't help.
