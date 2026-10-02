@@ -272,7 +272,7 @@ func (gr *GlobalRpc) lockUntried(ctx context.Context, maxWaitSec int, tried *tri
 
 func (gr *GlobalRpc) lockFirst(ctx context.Context, rpcType RPCKind, urls []string, from int, want func(string) bool) (Receipt, bool) {
 	c := gr.ruedi
-	chainType := strconv.Itoa(gr.Config.ChainId) + "_" + rpcType.String()
+	chainType := keyTag(gr.Config.ChainId, rpcType)
 	n := len(urls)
 	sctx, scancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 	defer scancel()
@@ -295,7 +295,7 @@ func (gr *GlobalRpc) lockFirst(ctx context.Context, rpcType RPCKind, urls []stri
 
 func (gr *GlobalRpc) redisUrls(ctx context.Context, rpcType RPCKind) []string {
 	c := gr.ruedi
-	chainType := strconv.Itoa(gr.Config.ChainId) + "_" + rpcType.String()
+	chainType := keyTag(gr.Config.ChainId, rpcType)
 	urls, err := c.Do(ctx, c.B().Lrange().Key(REDIS_KEY_URLS+chainType).Start(0).Stop(-1).Build()).AsStrSlice()
 	if err != nil || len(urls) == 0 {
 		return gr.urlsFor(rpcType)
