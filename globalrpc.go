@@ -84,7 +84,15 @@ func NewGlobalRpc(chainId int, configname, redisAddr, redisPw string, opts ...Op
 		return nil, err
 	}
 	client, err := rueidis.NewClient(
-		rueidis.ClientOption{InitAddress: []string{redisAddr}, Password: redisPw, TLSConfig: gr.redisTLS})
+		rueidis.ClientOption{
+			InitAddress: []string{redisAddr},
+			Password:    redisPw,
+			TLSConfig:   gr.redisTLS,
+			// No client-side caching: nothing here uses it, and turning it
+			// on (CLIENT TRACKING) fails the connection on servers without
+			// it, e.g. ElastiCache Serverless.
+			DisableCache: true,
+		})
 	if err != nil {
 		return nil, err
 	}
