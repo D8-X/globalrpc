@@ -1,8 +1,13 @@
 package globalrpc
 
 import (
+	"context"
 	"errors"
+	"regexp"
+	"slices"
 	"strings"
+
+	"github.com/ethereum/go-ethereum/rpc"
 )
 
 // The error are based on and extracted from the go-ethereum v1.17.1 error definitions
@@ -197,6 +202,8 @@ const (
 	RpcErrLock                  // couldn't acquire RPC lock
 	RpcErrDial                  // couldn't connect to RPC node
 	RpcErrConnection            // connection dropped during call
+	RpcErrTransient
+	RpcErrTimeout
 )
 
 func (k RpcErrKind) String() string {
@@ -207,10 +214,15 @@ func (k RpcErrKind) String() string {
 		return "Dial"
 	case RpcErrConnection:
 		return "Connection"
+	case RpcErrTransient:
+		return "Transient"
+	case RpcErrTimeout:
+		return "Timeout"
 	default:
 		return "Unknown"
 	}
 }
+
 type RpcError struct {
 	Kind RpcErrKind
 	Err  error
@@ -222,6 +234,84 @@ func (e *RpcError) Error() string {
 
 func (e *RpcError) Unwrap() error {
 	return e.Err
+}
+
+var transientRpcMarkers = []string{
+	"temporary internal error",
+	"no backend is currently healthy",
+	"no available upstreams",
+	"request limit reached",
+	"rate limit reached",
+	"method handler crashed",
+}
+
+var transientStatusLine = regexp.MustCompile(`\b(408 request time|429 too many requests|502 bad gateway|503 service )`)
+
+// observed in testnet
+var transientRpcCodes = regexp.MustCompile(`"code":\s*(19|-32007|-32008|-32011)\s*[,}]`)
+
+var transientCodes = []int{19, -32007, -32008, -32011}
+
+var transientStatus = []int{408, 429, 502, 503}
+
+var timeoutRpcMarkers = []string{
+	"context deadline exceeded",
+	"request timeout on the free",
+	"request timed out",
+	"client.timeout exceeded",
+	"execution timeout",
+}
+
+var timeoutStatusLine = regexp.MustCompile(`\b504 gateway time`)
+
+var timeoutRpcCodes = regexp.MustCompile(`"code":\s*(30|-32002)\s*[,}]`)
+
+var timeoutCodes = []int{30, -32002}
+
+var timeoutStatus = []int{504}
+
+func classifyRpcErr(err error) (RpcErrKind, bool) {
+	if err == nil || IsNonRetryable(err) {
+		return RpcErrUnknown, false
+	}
+	msg := strings.ToLower(err.Error())
+	var code, status int
+	var jsonErr rpc.Error
+	if errors.As(err, &jsonErr) {
+		code = jsonErr.ErrorCode()
+	}
+	var httpErr rpc.HTTPError
+	if errors.As(err, &httpErr) {
+		status = httpErr.StatusCode
+	}
+	if code == 3 || code == -32015 || strings.Contains(msg, "execution reverted") ||
+		strings.Contains(msg, "vm exception while processing") ||
+		strings.Contains(msg, "vm execution error") ||
+		ClassifyTxErr(err) != TxErrUnknown {
+		return RpcErrUnknown, false
+	}
+	// this one was observed in mainnet and testnet
+	if errors.Is(err, context.DeadlineExceeded) || slices.Contains(timeoutCodes, code) ||
+		slices.Contains(timeoutStatus, status) ||
+		timeoutRpcCodes.MatchString(msg) || timeoutStatusLine.MatchString(msg) ||
+		containsAny(msg, timeoutRpcMarkers) {
+		return RpcErrTimeout, true
+	}
+	if slices.Contains(transientCodes, code) || slices.Contains(transientStatus, status) ||
+		transientRpcCodes.MatchString(msg) || transientStatusLine.MatchString(msg) ||
+		containsAny(msg, transientRpcMarkers) {
+		return RpcErrTransient, true
+	}
+	return RpcErrUnknown, false
+}
+
+func containsAny(msg string, markers []string) bool {
+	for _, m := range markers {
+		if strings.Contains(msg, m) {
+			return true
+		}
+	}
+	return false
 }
 
 func ClassifyTxErr(err error) TxErrKind {
